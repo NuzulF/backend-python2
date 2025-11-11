@@ -7,51 +7,65 @@ import threading
 import time
 import os
 import pickle
-from .utils import load_clean_csv
 import numpy as np
 
-
+from .utils import load_clean_csv, preproses_koordinat
 from .sentiment_model import BERT_CNN, predict_text_with_score
 from .cf_recommend import CosineCF
 from .preprocess import cleansing_data, normalize_text, stemming_text
 from .lda_topic import load_lda_model, get_dominant_topic
-from .utils import preproses_koordinat
-
-from nltk.corpus import stopwords
-stop_words = stopwords.words('indonesian')
-
 from .cf_predict import predict_for_user_id, predict_new_user_from_text
 
+# ===============================
+# Set environment variable NLTK
+# ===============================
+# Pastikan folder nltk_data sudah dibuat dan www-data memiliki izin
+# Contoh: /var/www/html/repopythonv2/nltk_data
+os.environ['NLTK_DATA'] = '/var/www/html/repopythonv2/nltk_data'
 
+import nltk
+from nltk.corpus import stopwords
+
+# Stopwords hanya di-load dari folder lokal (tidak download saat runtime)
+stop_words = stopwords.words('indonesian')
+
+# ===============================
+# Blueprint Flask
+# ===============================
 main_bp = Blueprint('main', __name__)
 
-# === KONSTANTA LOKASI PENYIMPANAN ===
+# ===============================
+# Konstanta lokasi penyimpanan
+# ===============================
 CF_MODEL_PATH = "models/cf_model.pkl"
 DF_DATA_PATH = "data/df_data.pkl"
 LDA_MODEL_PATH = "models/lda_model_saved.pkl"
 
-# === MODEL GLOBAL ===
+# ===============================
+# Model global
+# ===============================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tokenizer = BertTokenizer.from_pretrained('indobenchmark/indobert-base-p1')
 bert_model = BERT_CNN.build(model_path='models/BERT-CNN_model.pth')
 
-# variabel global untuk pipeline
+# Variabel global untuk pipeline
 df_data = None
 cf_model = None
 lda_model = None
 lda_dict = None
 
-# status retrain
+# Status retrain
 retrain_status = {
-    "state": "idle",          # idle | running | success | error
-    "progress": 0,            # 0–100
+    "state": "idle",  # idle | running | success | error
+    "progress": 0,
     "start_time": None,
     "end_time": None,
     "message": None
 }
 
-
-# === Fungsi bantu ===
+# ===============================
+# Fungsi bantu
+# ===============================
 def save_object(obj, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
@@ -66,7 +80,6 @@ def load_object(path):
 
 
 def save_pipeline(cf_obj, df_obj, lda_obj, lda_dict_obj):
-    """Simpan semua komponen pipeline ke disk"""
     save_object(cf_obj, CF_MODEL_PATH)
     save_object(df_obj, DF_DATA_PATH)
     save_object((lda_obj, lda_dict_obj), LDA_MODEL_PATH)
@@ -97,16 +110,16 @@ def load_pipeline():
 load_pipeline()
 
 
-# === 1️⃣ ENDPOINT RETRAIN MODEL ===
+# ===============================
+# Endpoint retrain model
+# ===============================
 @main_bp.route("/retrain_model", methods=["POST"])
 def retrain_model():
-    """
-    Jalankan pipeline retraining (asynchronous)
-    """
-    global df_data, cf_model, lda_model, lda_dict, retrain_status
+    global df_data, cf_model, retrain_status
 
     if retrain_status["state"] == "running":
         return jsonify({"message": "⚙️ Retraining sedang berlangsung, harap tunggu..."}), 409
+
     def retrain_task():
         global df_data, cf_model, retrain_status
         try:
@@ -119,14 +132,13 @@ def retrain_model():
             df = load_clean_csv("data/data_new.csv")
             retrain_status["progress"] = 20
 
-            # Bangun model CF dengan kolom yang pasti ada
+            # Bangun model CF
             cf = CosineCF(df, user_col="id_reviewer", item_col="id_dtw", rating_col="rating", mode="user")
             cf.build_matrix()
             cf.compute_similarity()
             retrain_status["progress"] = 80
 
             # Simpan model dan dataset bersih
-            import pickle
             df.to_pickle("models/df_data.pkl")
             with open("models/cf_model.pkl", "wb") as f:
                 pickle.dump(cf, f)
@@ -145,27 +157,30 @@ def retrain_model():
                 "state": "error",
                 "message": f"❌ Gagal retrain: {e}"
             })
+
     threading.Thread(target=retrain_task).start()
     return jsonify({
         "message": "🔄 Retraining dimulai di background. Gunakan /retrain_status untuk melihat progres."
     }), 202
 
 
-# === 2️⃣ CEK STATUS RETRAINING ===
+# ===============================
+# Endpoint cek status retrain
+# ===============================
 @main_bp.route("/retrain_status", methods=["GET"])
 def retrain_status_check():
     global retrain_status
     return jsonify(retrain_status), 200
 
 
+# ===============================
+# Endpoint inference user_id
+# ===============================
 @main_bp.route("/inference", methods=["POST"])
 def inference():
     global df_data, cf_model
 
     if cf_model is None or df_data is None:
-        from .utils import load_clean_csv
-        import pickle, os
-
         df_data = load_clean_csv("data/data_new.csv")
         if os.path.exists("models/cf_model.pkl"):
             with open("models/cf_model.pkl", "rb") as f:
@@ -176,7 +191,7 @@ def inference():
                 "message": "Model CF belum tersedia."
             }), 400
 
-    # 🔧 Pastikan kolom nama_DTW ada
+    # Pastikan kolom nama_DTW ada
     if 'nama_DTW' not in df_data.columns:
         similar_cols = [c for c in df_data.columns if c.lower().replace(" ", "_") == "nama_dtw"]
         if similar_cols:
@@ -189,7 +204,6 @@ def inference():
     top_n = payload.get("top_n", 5)
 
     try:
-        # Prediksi rekomendasi
         hist, recs = predict_for_user_id(
             ibcf_8=cf_model,
             df=df_data,
@@ -200,7 +214,7 @@ def inference():
             name_col='nama_DTW'
         )
 
-        # Ambil nama DTW dari dataset
+        # Mapping id_dtw → nama
         id2name = (
             df_data[['id_dtw', 'nama_DTW']]
             .dropna()
@@ -231,25 +245,16 @@ def inference():
             "user": user_id
         }), 200
 
-    except FileNotFoundError as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 404
-    except ValueError as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 400
     except Exception as e:
         return jsonify({
             "status": "error",
-            "message": f"Terjadi kesalahan: {str(e)}"
+            "message": str(e)
         }), 500
 
 
-
-# === 4️⃣ ANALISIS TEKS (Sentimen + Topik) ===
+# ===============================
+# Endpoint analisis teks
+# ===============================
 @main_bp.route("/analyze_text", methods=["POST"])
 def analyze_text():
     try:
@@ -285,7 +290,9 @@ def analyze_text():
         return jsonify({"error": str(e)}), 500
 
 
-# === 5️⃣ STATUS API ===
+# ===============================
+# Endpoint status API
+# ===============================
 @main_bp.route("/", methods=["GET"])
 def home():
     return jsonify({
@@ -295,7 +302,10 @@ def home():
         "retrain_state": retrain_status["state"]
     }), 200
 
-# === 3️⃣b INFERENCE DARI TEKS USER BARU ===
+
+# ===============================
+# Endpoint inference teks user baru
+# ===============================
 @main_bp.route("/inference_text", methods=["POST"])
 def inference_text():
     global df_data, cf_model, lda_model, lda_dict, stop_words
