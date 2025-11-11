@@ -1,3 +1,2 @@
-venv
 models/BERT-CNN_model.pth
 models/cf_model.pkl
