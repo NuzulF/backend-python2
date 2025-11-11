@@ -1,0 +1,15 @@
+Flask
+torch
+transformers
+pandas
+numpy
+nltk
+Sastrawi
+gensim
+scikit-learn
+umap-learn
+geopy
+python-Levenshtein
+tqdm
+wordcloud
+matplotlib
